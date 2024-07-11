@@ -25,7 +25,7 @@ W Projekcie używałem danych pochodzących z [huggingface](https://huggingface.
 
 ```{r}
 #| echo: false
-setwd("C:\\Users\\pawel\\Desktop\\Studia\\AAO_Projekt")
+setwd("C:\\Users\\pawel\\Documents\\GitHub\\LULC_Classification")
 ```
 
 ```{r}
@@ -38,7 +38,7 @@ setwd("C:\\Users\\pawel\\Desktop\\Studia\\AAO_Projekt")
     library(keras)
     library(arrow)
     library(knitr)
-   library(grid)
+    library(grid)
     library(gridExtra)
 set.seed(1305)
 ```
