@@ -15,10 +15,1235 @@ execute:
 editor: visual
 ---
 
-This is a Quarto website.
+## Cel badawczy
 
-To learn more about Quarto websites visit <https://quarto.org/docs/websites>.
+Celem badania jest budowa optymalnego modelu klasyfikacyjnego za pomocą wybranych algorytmów uczenia maszynowego. Jego zadaniem będzie klasyfikowanie wykorzystania gruntów na obrazach geoprzestrzennych.
+
+## Informacje o zbiorze
+
+W Projekcie używałem danych pochodzących z [huggingface](https://huggingface.co/datasets/cm93/eurosat). Zbiór danych przedstawia zdjęcia satelitarne zrobione przez [Sentinel-2](https://sentiwiki.copernicus.eu/web/sentinel-2). Zbiór zawiera 27000 zdjęć 10 klas Użytkowanie Gruntów i Pokrycie Terenu (Land Use and Land Cover). Zbiór został już podzielony w proporcji na treningowy (80%) - 21600 zdjęć, walidacyjny (10%) - 2700 zdjęć, testowy (10%) - 2700 zdjęć.
 
 ```{r}
-1 + 1
+#| echo: false
+setwd("C:\\Users\\pawel\\Desktop\\Studia\\AAO_Projekt")
 ```
+
+```{r}
+#| echo: false
+
+    library(tidyverse)
+    library(imager)
+    library(magick)
+    library(jpeg)
+    library(keras)
+    library(arrow)
+    library(knitr)
+   library(grid)
+    library(gridExtra)
+set.seed(1305)
+```
+
+### Wczytanie danych
+
+```{r}
+train <- read_parquet("train-00000-of-00001.parquet", as_data_frame = TRUE)
+val <- read_parquet("validation-00000-of-00001.parquet", as_data_frame = TRUE)
+test <- read_parquet("test-00000-of-00001.parquet", as_data_frame = TRUE)
+```
+
+### Zamienienie danych na katalogi
+
+```{r}
+# Class name for each class
+class_names <- c("Forest", "River", "Highway", "AnnualCrop", "SeaLake", 
+                 "HerbaceousVegetation", "Industrial", "Residential", 
+                 "PermanentCrop", "Pasture")
+
+# Main directory for training data
+Train <- "Train"
+if (!dir.exists(Train)) {
+  dir.create(Train)
+}
+
+# Create directories for each class
+for (name in class_names) {
+  class_dir <- file.path(Train, name)
+  if (!dir.exists(class_dir)) {
+    dir.create(class_dir)
+  }
+}
+
+# Process each image
+for (i in 1:length(train$image$bytes)) {
+  binary_data <- as.raw(train$image$bytes[[i]])
+  tmp_file <- tempfile()
+  writeBin(binary_data, tmp_file)
+  obraz <- readJPEG(tmp_file)
+  file.remove(tmp_file)
+  
+  # Get class label and name (adjusting for zero-based indexing)
+  class_label <- train$label[i]
+  class_name <- class_names[class_label + 1]
+  
+  # Create output file path
+  output_file <- file.path(Train, class_name, paste0("image_", i, ".jpg"))
+  
+  # Write image to the output file
+  writeJPEG(obraz, output_file)
+}
+
+Val <- "Val"
+if (!dir.exists(Val)) {
+  dir.create(Val)
+}
+
+for (name in class_names) {
+  class_dir <- file.path(Val, name)
+  if (!dir.exists(class_dir)) {
+    dir.create(class_dir)
+  }
+}
+for (i in 1:length(val$image$bytes)) {
+  binary_data <- as.raw(val$image$bytes[[i]])
+  tmp_file <- tempfile()
+  writeBin(binary_data, tmp_file)
+  obraz <- readJPEG(tmp_file)
+  file.remove(tmp_file)
+  class_label <- val$label[i]
+  class_name <- class_names[class_label + 1]
+
+  output_file <- file.path(Val, class_name, paste0("image_", i, ".jpg"))
+  writeJPEG(obraz, output_file)
+}
+
+Test <- "Test"
+if (!dir.exists(Test)) {
+  dir.create(Test)
+}
+
+for (name in class_names) {
+  class_dir <- file.path(Test, name)
+  if (!dir.exists(class_dir)) {
+    dir.create(class_dir)
+  }
+}
+for (i in 1:length(test$image$bytes)) {
+  binary_data <- as.raw(test$image$bytes[[i]])
+  tmp_file <- tempfile()
+  writeBin(binary_data, tmp_file)
+  obraz <- readJPEG(tmp_file)
+  file.remove(tmp_file)
+  class_label <- test$label[i]
+  class_name <- class_names[class_label + 1]
+  output_file <- file.path(Test, class_name, paste0("image_", i, ".jpg"))
+  writeJPEG(obraz, output_file)
+}
+```
+
+### Rozkład klas
+
+```{r}
+#| echo: false
+
+   t1 <- as.data.frame(table(train$label))
+t2 <- as.data.frame(table(val$label))
+t3 <- as.data.frame(table(test$label))
+Names<- data.frame(class_names)
+df <- data.frame(Names,t1[,2], t2[,2],t3[,2])
+colnames(df) <- c("Klasa", "Treningowy", "Walidacyjny", "Testowy")
+kable(df)
+```
+
+### Przykładowe obrazy
+
+```{r}
+#| echo: false
+
+# Definicja funkcji sample_images
+sample_images <- function(dir, class_names, n = 9) {
+  sampled_paths <- character(n)
+  sampled_classes <- character(n)
+  
+  for (i in 1:n) {
+    class_name <- sample(class_names, 1)
+    class_dir <- file.path(dir, class_name)
+    files <- list.files(class_dir, pattern = ".jpg", full.names = TRUE)
+    sampled_file <- sample(files, 1)
+    sampled_paths[i] <- sampled_file
+    sampled_classes[i] <- class_name
+  }
+  return(list(paths = sampled_paths, classes = sampled_classes))
+}
+
+# Funkcja do wyświetlania obrazów z białymi podpisami klas i marginesami
+plot_images <- function(image_paths, image_classes) {
+  images <- lapply(image_paths, function(path) {
+    img <- image_read(path)
+    img <- image_resize(img, "64x64")
+    img
+  })
+  grid.arrange(grobs = lapply(seq_along(images), function(i) {
+    img <- images[[i]]
+    class_label <- image_classes[i]
+    g <- rasterGrob(as.raster(img))
+    g <- gTree(children = gList(g, textGrob(class_label, x = 0.5, y = 0.05, just = "center", gp = gpar(col = "white", fontsize = 10))))
+    g <- gTree(children = gList(g), vp = viewport(height = unit(0.9, "npc"), width = unit(0.9, "npc")))
+    g
+  }), ncol = 3, )
+}
+
+# Nazwy klas
+class_names <- c("Forest", "River", "Highway", "AnnualCrop", "SeaLake", 
+                 "HerbaceousVegetation", "Industrial", "Residential", 
+                 "PermanentCrop", "Pasture")
+
+# Losowe próbkowanie obrazów
+sampled_images <- sample_images("Train", class_names, n = 9)
+
+# Ustawienie układu siatki
+par(mfrow=c(3,3))
+
+# Wywołanie funkcji plot_images z losowo wybranymi obrazami
+plot_images(sampled_images$paths, sampled_images$classes)
+
+```
+
+### Określenie miary
+
+Za miarę sukcesu przyjmuję:
+
+-   `Accuracy` - dokładność, jak dobrze model klasyfikuje dane,
+
+-   `AUC` - pole pod krzywą ROC, jak dobrze model rozróżnia klasy,
+
+### Linki do projektów w Kaggle
+
+[AAO_Projekt](https://www.kaggle.com/code/bramkier/aao-projekt/notebook)
+
+[AAO_Projekt2](https://www.kaggle.com/code/bramkier/aao-projekt2)
+
+[AA0_Projekt3](https://www.kaggle.com/code/bramkier/aao-projekt3)
+
+[AA0_Projekt4](https://www.kaggle.com/code/bramkier/aa0-projekt4)
+
+[AA0_Projekt5](https://www.kaggle.com/code/bramkier/aa0-projekt-5)
+
+[AA0_Projekt_test](https://www.kaggle.com/code/bramkier/aao-projekt-test?scriptVersionId=186097171)
+
+## Modelowanie
+
+### Callback
+
+Callback to specjalna funkcja, która jest używana na różnych etapach uczenia do monitorowania procesu trenowania modelu. Oto callbacki jakich używałem:
+
+```{r}
+#| eval: false
+#| code-fold: show
+callbacks_list <- list(
+  callback_early_stopping(monitor = "val_loss", patience = 10),
+  callback_reduce_lr_on_plateau(monitor = "val_loss", factor = 0.1, patience = 5)
+)
+```
+
+`callback_early_stopping` - zatrzymuje trening jeśli `val_loss` nie poprawi się przez 10 epok
+
+`callback_reduce_lr_on_plateau` - zmienia współczynnik uczenia o 0.1 jeśli `val_loss` nie poprawi się przez 5 epok
+
+### Przygotowanie danych
+
+Generuję dane `treningowe`, `walidacyjne` oraz `treningowe` za pomocą generatorów.
+
+```{r, eval=FALSE}
+#| code-fold: show
+train_data_gen <- image_data_generator(rescale = 1/255)
+val_data_gen <- image_data_generator(rescale = 1/255)
+test_data_gen <- image_data_generator(rescale = 1/255)
+
+train_generator1 <- flow_images_from_directory(
+  file.path("Train"),
+  train_data_gen,
+  target_size = c(64, 64),
+  batch_size = 32,
+  class_mode = "categorical"
+)
+```
+
+```{r, eval=FALSE}
+val_generator1 <- flow_images_from_directory(
+  file.path("Val"),
+  val_data_gen,
+  target_size = c(64, 64),
+  batch_size = 32,
+  class_mode = "categorical"
+)
+
+test_generator1 <- flow_images_from_directory(
+  file.path("Test"),
+  test_data_gen,
+  target_size = c(64, 64),
+  batch_size = 32,
+  class_mode = "categorical"
+)
+```
+
+`image_data_generator()` jest funkcją służącą do tworzenia generatora obrazków, który wykonuje ich przekształcenia. W tym przypadku `rescale = 1/255` jest to funkcja, która normalizuje piksele obrazów (przeskalowuje wartości pikseli w obrazach z \[0,255\] do \[0,1\], co jest standardową praktyką w przetwarzaniu obrazów do trenowania modeli). Następnie za pomocą `flow_images_from_directory` generuje serie (ang. baches) danych z obrazów z katalogów `Train, Val, Test` używając wcześniej zdefiniowanego generatora ustawiając rozmiar obrazów na `64x64`, rozmiar serii (liczba obrazów w jednej serii) na `32` oraz tryb klasyfikacji wieloklasowej.
+
+### Argumentacja
+
+Przeprowadziłem argumentację obrazów za pomocą funkcji `image_data_generator()`:
+
+```{r, eval=FALSE}
+#| code-fold: show
+
+datagen <- image_data_generator(
+  rotation_range = 40,
+  width_shift_range = 0.2,
+  height_shift_range = 0.2,
+  shear_range = 0.2,
+  zoom_range = 0.2,
+  channel_shift_range = 0.2,
+  fill_mode = "nearest",
+  horizontal_flip = TRUE,
+  vertical_flip = FALSE,
+  rescale = 1/255,
+)
+```
+
+-   `rotation_range = 40` - obraz może być losowo obracany o 40 stopni,
+
+-   `width_shift_range = 0.2` - obraz może być losowo przesuwany wzdłuż osi szerokości o 20%,
+
+-   `height_shift_range = 0.2` - obraz może być losowo przesuwany wzdłuż osi wysokości o 20% ,
+
+-   `shear_range = 0.2` - obraz może być losowo ścinany o 20%,
+
+-   `zoom_range = 0.2` - obraz może być losowo przybliżany lub oddalany o 20%,
+
+-   `channel_shift_range = 0.2` - intensywność kanałów może być losowo przesunięta o 20%,
+
+-   `fill_mode = "nearest"` - po różnych operacjach przekształceń wypełnia piksele najbliższym sąsiadem,
+
+-   `horizontal_flip = TRUE` - losowe odbicie poziome obrazu,
+
+-   `vertical_flip = FALSE` - losowe odbicie pionowe obrazu,
+
+-   `rescale = 1/255` - normalizacja pikseli.
+
+```{r, eval=FALSE}
+train_generator2 <- flow_images_from_directory(
+  file.path("Train"),
+  datagen,
+  target_size = c(64, 64),
+  batch_size = 32,
+  class_mode = "categorical"
+)
+```
+
+Tworze generatora z argumentowaniami obrazów.
+
+### Parametry modelów
+
+Do tworzenia modelów będę używał następujących funkcji:
+
+-   `keras_model_sequential()` - tworzy nowy, pusty model sekwencyjny do którego będą dodawane nowe warstwy,
+
+-   `layer_conv_2d()` - dodaje warstwę konwolucyjną,
+
+    -   `filters` - liczba filtrów w warstwie konwolucyjnej (wielokrotności 2),
+
+    -   `kernel_size` - rozmiar filtra (3x3),
+
+    -   `activation` - funkcja aktywacji (relu),
+
+    -   `input_shape` - kształt danych wejściowych (64x64x3),
+
+    -   `kernel_regularizer` - dodaje regularyzator, który dodaje karę do funkcji kosztu proporcjonalną do kwadratu wartości wag,
+
+-   `layer_max_pooling_2d()` - dodaje warstwę maksymalnego próbkowania,
+
+    -   `pool_size` - rozmiar okna próbkowania, które zmniejszają rozmiar obrazu (2x2),
+
+-   `layer_flatten()` - przekształca dane wyjściowe z poprzednich warstw do jednowymiarowego wektora, aby można było je podać do warstwy gęstej,
+
+-   `layer_dense()` - dodawanie warstwy gęstej ,
+
+    -   `units` - liczba neuronów w warstwie (wielokrotności 2),
+
+    -   `activation` - funkcja aktywacji (relu),
+
+    -   `units = 10,` `activation = "softmax"` - liczba neuronów odpowiadająca liczbie klas, funkcja aktywacji softmax, która przekształca wyjście w prawdopodobieństwo przynależności do poszczególnych klas,
+
+-   `layer_dropout()` - określa częstotliwość z jaką jednostki w warstwie będą wyłączane podczas treningu (25%, 50%),
+
+-   `layer_batch_normalization()` - normalizuje aktywacje z poprzedniej warstwy, pomaga w stabilizacji i przyśpieszeniu procesu treningu,
+
+### Parametry kompilacji
+
+-   `loss = 'categorical_crossentropy'`: Funkcja straty, która jest używana do oceny błędu między rzeczywistymi a przewidywanymi wynikami.
+
+-   `optimizer = optimizer_adam()`: Algorytm optymalizacji Adam, który dostosowuje tempo uczenia podczas trenowania.
+
+-   `optimizer = optimizer_nadam()`: Jest rozszerzeniem algorytmu Adam.
+
+-   `metrics = c('accuracy', 'AUC')`: Metryka, którą chcemy monitorować podczas trenowania, tutaj jest to dokładność oraz Area Under the Curve.
+
+### Model1
+
+Tworzę 2 modele o tych samych parametrach: Model1Basic, Model1Argumented.
+
+```{r, eval=FALSE}
+#| code-fold: show
+model1Basic <- model1Argumented  <- keras_model_sequential() %>%
+  layer_conv_2d(filters = 16, kernel_size = c(3, 3), activation = 'relu', input_shape = c(64, 64, 3)) %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = 'relu') %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = 'relu') %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_flatten() %>%
+  layer_dense(units = 16, activation = 'relu') %>%
+  layer_dense(units = 10, activation = 'softmax')
+
+
+model1Basic %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_nadam(),
+  metrics = c('accuracy', 'AUC')
+)
+
+model1Argumented %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_nadam(),
+  metrics = c('accuracy', 'AUC')
+)
+```
+
+Te modele mają 60,634 parametrów.
+
+#### Trenowanie Model1Basic
+
+```{r, eval=FALSE}
+history1Basic <- model1Basic %>% fit(
+  train_generator1,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+  callbacks = callbacks_list
+)
+
+plot(history1Basic)
+```
+
+![Historia trenowania Model1Basic](model1Basic.png){fig-align="center"}
+
+```{r, eval=FALSE}
+model1Basic %>% evaluate(train_generator1, steps =  as.integer(nrow(train) / 32))
+model1Basic %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model1Basic, filepath="models/model1Basic")
+```
+
+```{r}
+#| echo: false
+result_train_model1Basic <- c(0.16109724342823,0.948240756988525, 0.998030424118042)
+result_val_model1Basic <- c(0.397883862257004, 0.8671875, 0.988390147686005)
+r_model1Basic <- data.frame(result_train_model1Basic,result_val_model1Basic)
+rownames(r_model1Basic) <-  c("loss", "accuracy", "auc")
+kable(r_model1Basic)
+```
+
+Model1Basic został wytrenowany na obrazach bez argumentacji. Model przestał się poprawiać według callbacka po około 55 epokach. Strata (loss) jest znacznie mniejszy na zbiorze treningowym co może oznaczać przeuczenie (overfitting). Dokładność na zbiorze testowym wyniosła `r round(result_train_model1Basic[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model1Basic[2],4)*100`%, co również sugeruje, że model jest przeuczony. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model dobrze rozróżnia klasy.
+
+#### Trenowanie Model1Argumented
+
+```{r, eval=FALSE}
+history1Argumented <- model1Argumented %>% fit(
+  train_generator2,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+    callbacks = callbacks_list
+)
+
+plot(history1Argumented)
+```
+
+![Historia trenowania Model1Argumented](model1Argumented.png)
+
+```{r, eval=FALSE}
+model1Argumented %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
+model1Argumented %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model1Argumented, filepath="models/model1Argumented")
+```
+
+```{r}
+#| echo: false
+result_train_model1Argumented <- c(0.596068680286407,0.814953684806824, 0.976783335208893)
+result_val_model1Argumented <- c(0.439406633377075, 0.862351179122925, 0.985227227210999)
+r_model1Argumented <- data.frame(result_train_model1Argumented,result_val_model1Argumented)
+rownames(r_model1Argumented) <-  c("loss", "accuracy", "auc")
+kable(r_model1Argumented)
+```
+
+Model1Argumented został wytrenowany na obrazach z argumentacją. Model przestał się poprawiać według callbacka po około 12 epokach. Strata jest znacznie mniejsza na zbiorze walidacyjnym co może oznaczać, że model dobrze generalizuje i nie jest przeuczony. Dokładność na zbiorze testowym wyniosła `r round(result_train_model1Argumented[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model1Argumented[2],4)*100`%, co również sugeruje, że model nie jest przeuczony i dobrze generalizuje. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model dobrze rozróżnia klasy.
+
+#### Wnioski
+
+Model1Basic pokazuje lepsze wyniki metryk zarówno na zborze treningowym jak i walidacyjnym, co sugeruje, że jest bardziej skuteczny w klasyfikacji obrazów, ale jest widocznie przeuczony. Model1Argumented może mieć większy potencjał do generalizacji na nowe, nieznane dane, gdyż został zbudowany z argumentacją.
+
+### Model2
+
+Tworzę 2 modele o tych samych parametrach: Model2Basic, Model2Argumented.
+
+```{r, eval=FALSE}
+#| code-fold: show
+model2Basic <- model2Argumented  <- keras_model_sequential() %>%
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = 'relu', input_shape = c(64, 64, 3)) %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = 'relu') %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = 'relu') %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_flatten() %>%
+  
+  layer_dense(units = 512, activation = 'relu') %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 10, activation = 'softmax')
+
+model2Basic %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy', 'AUC')
+)
+```
+
+Te modele mają 2,461,130 parametrów.
+
+```{r, eval=FALSE}
+model2Argumented %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy', 'AUC')
+)
+```
+
+#### Trenowanie Model2Basic
+
+```{r, eval=FALSE}
+history2Basic <- model2Basic %>% fit(
+  train_generator1,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+  callbacks = callbacks_list  
+)
+plot(history2Basic)
+```
+
+![Historia trenowania Model2Basic](model2Basic.png)
+
+```{r, eval=FALSE}
+model2Basic %>% evaluate(train_generator1, steps =as.integer(nrow(train) / 32))
+model2Basic %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model2Basic, filepath="models/model2Basic")
+```
+
+```{r}
+#| echo: false
+
+result_train_model2Basic <- c(0.0356645919382572,0.989583313465118, 0.999804317951202)
+result_val_model2Basic <- c(0.28066611289978, 0.915178596973419, 0.991694331169128)
+r_model2Basic <- data.frame(result_train_model2Basic,result_val_model2Basic)
+rownames(r_model2Basic) <-  c("loss", "accuracy", "auc")
+kable(r_model2Basic)
+```
+
+Model2Basic został wytrenowany na obrazach bez argumentacji. Model przestał się poprawiać według callbacka po około 34 epokach. Strata jest bardzo niska na zbiorze treningowym, ale nieco wyższa na zbiorze walidacyjnym co może oznaczać przeuczenie, ale różnica nie jest dramatycznie wysoka. Dokładność na zbiorze testowym wyniosła `r round(result_train_model2Basic[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model2Basic[2],4)*100`%, co sugeruje, że model dobrze klasyfikuje dane na których był trenowany, ale nieco gorzej generalizuje. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model dobrze rozróżnia klasy.
+
+#### Trenowanie Model2Argumented
+
+```{r, eval=FALSE}
+history2Argumented <- model2Argumented %>% fit(
+  train_generator2,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+    callbacks = callbacks_list
+)
+
+plot(history2Argumented)
+```
+
+![Historia trenowania Model2Argumented](model2Argumented.png)
+
+```{r, eval=FALSE}
+model2Argumented %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
+model2Argumented %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model2Argumented, filepath="models/model2Argumented")
+```
+
+```{r}
+#| echo: false
+
+result_train_model2Argumented <- c(0.465536743402481,0.866944432258606, 0.982871532440186)
+result_val_model2Argumented <- c(0.434615582227707, 0.886160731315613, 0.983345031738281)
+r_model2Argumented<- data.frame(result_train_model2Argumented,result_val_model2Argumented)
+rownames(r_model2Argumented) <-  c("loss", "accuracy", "auc")
+kable(r_model2Argumented)
+```
+
+Model2Argumented został wytrenowany na obrazach z argumentacją. Model przestał się poprawiać według callbacka po około 12 epokach. Strata jest nieco wyższa zbiorze treningowy niż na zbiorze walidacyjnym co może oznaczać że model nie jest przeuczony. Dokładność na zbiorze testowym wyniosła `r round(result_train_model2Argumented[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model2Argumented[2],4)*100`%, co sugeruje, że model w miare dobrze klasyfikuje dane na których był trenowany, lepiej generalizuje. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model dobrze rozróżnia klasy.
+
+#### Wnioski
+
+Model2Basic wykazuje lepszą wydajność pod względem wszystkich metryk, jednak model jest przeuczony. Model2Argumented mimo mniejszej skuteczność dopasowania może lepiej generalizować.
+
+### Model3
+
+Tworzę 2 modele o tych samych parametrach: Model3, ale w Model4 dodatkowo dodaję regularyzację.
+
+```{r,eval=FALSE}
+#| code-fold: show
+model3 <- keras_model_sequential() %>%
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = 'relu', input_shape = c(64, 64, 3)) %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = 'relu') %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = 'relu') %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_conv_2d(filters = 256, kernel_size = c(3, 3), activation = 'relu') %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_flatten() %>%
+  
+  layer_dense(units = 512, activation = 'relu') %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 256, activation = 'relu') %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 10, activation = 'softmax')
+
+model3 %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy', 'AUC')
+)
+```
+
+```{r, eval=FALSE}
+
+model4 <- keras_model_sequential() %>%
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = 'relu', input_shape = c(64, 64, 3),
+                kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = 'relu',
+                kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = 'relu',
+                kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_conv_2d(filters = 256, kernel_size = c(3, 3), activation = 'relu',
+                kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_dropout(rate = 0.25) %>%
+  
+  layer_flatten() %>%
+  
+  layer_dense(units = 512, activation = 'relu',
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 256, activation = 'relu',
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 10, activation = 'softmax')
+
+model4 %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(learning_rate = 0.0001),
+  metrics = c('accuracy', 'AUC')
+)
+```
+
+Te modele mają 1,052,106 parametrów.
+
+#### Trenowanie Model3
+
+```{r,eval=FALSE}
+history5 <- model3 %>% fit(
+  train_generator2,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+callbacks = callbacks_list
+)
+
+plot(history5)
+```
+
+![Historia trenowania Model3](model3.png)
+
+```{r,eval=FALSE}
+model3 %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
+model3 %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model3, filepath="models/model3")
+```
+
+```{r}
+#| echo: false
+result_train_model3 <- c(0.270884603261948,0.903611123561859, 0.994597315788269)
+result_val_model3 <- c(0.309085786342621, 0.894717276096344, 0.992571175098419)
+r_model3 <- data.frame(result_train_model3,result_val_model3)
+rownames(r_model3) <-  c("loss", "accuracy", "auc")
+kable(r_model3)
+```
+
+Model3 został wytrenowany na obrazach z argumentacją. Model przestał się poprawiać według callbacka po około 45 epokach. Strata jest nieznacznie wyższa na zbiorze walidacyjnym co może oznaczać, że jest nieznacznie przeuczony. Dokładność na zbiorze testowym wyniosła `r round(result_train_model3[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model3[2],4)*100`%, co sugeruje, że model jest nieznacznie przeuczony i dobrze generalizuje. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model dobrze rozróżnia klasy.
+
+#### Trenowanie Model4
+
+```{r,eval=FALSE}
+history6 <- model4 %>% fit(
+  train_generator2,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+  callbacks = callbacks_list
+)
+
+plot(history6)
+```
+
+![Historia trenowania Model4](model4.png)
+
+```{r}
+#| echo: false
+result_train_model4 <- c(0.793393731117249,0.831342577934265, 0.984364211559296)
+result_val_model4 <- c(0.802064001560211, 0.835193455219269, 0.983355462551117)
+r_model4 <- data.frame(result_train_model4,result_val_model4)
+rownames(r_model4) <-  c("loss", "accuracy", "auc")
+kable(r_model4)
+```
+
+Model4 został wytrenowany na obrazach z argumentacją. Model przestał się poprawiać według callbacka po około 38 epokach. Strata jest nieznacznie wyższa na zbiorze walidacyjnym co może oznaczać, że jest nieznacznie przeuczony. Dokładność na zbiorze testowym wyniosła `r round(result_train_model4[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model4[2],4)*100`%, co sugeruje, że model nie jest przeuczony i dobrze generalizuje. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model dobrze rozróżnia klasy.
+
+#### Wnioski
+
+Dodanie regularyzacji pogorszyło metryki Model4 względem Model3.
+
+### VGG16
+
+VGG16 jest to jeden z popularnych modeli oparty na konwolucyjnych sieciach neuronowych. Tworzę 2 modele:
+
+-   Model5VGG jest wstępnie uczony (wagi są wstępnie wytrenowane na ImageNet), nie zachowuje w pełni połączonych warstw.
+
+-   Model6VGG nie jest wstępnie uczony (wagi są losowe) oraz zachowuje w pełni połączone warstwy.
+
+```{r,eval=FALSE}
+conv_baseVGG1 <- application_vgg16(
+  weights = "imagenet",
+  include_top = FALSE,
+  input_shape = c(64,64, 3)
+)
+cat("Liczba tensorów poddawanych uczeniu przez zamrożeniem:", length(model5VGG$trainable_weights), "\n")
+freeze_weights(conv_baseVGG1)
+
+cat("Liczba tensorów poddawanych ucznieu po zamrożeniu wag:", length(model5VGG$trainable_weights), "\n")
+```
+
+Liczba tensorów poddawanych uczeniu przez zamrożeniem: 30
+
+Liczba tensorów poddawanych ucznieu po zamrożeniu wag: 4
+
+```{r,eval=FALSE}
+#| code-fold: show
+model5VGG <- keras_model_sequential() %>%
+  conv_baseVGG1 %>%
+  layer_flatten() %>%
+  layer_dense(units = 256, activation = "relu") %>%
+ layer_dropout(rate = 0.5)%>%
+  layer_dense(units = 10, activation = "softmax")
+
+model5VGG%>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy', 'AUC'))
+```
+
+```{r,eval=FALSE}
+model6VGG <- application_vgg16(
+  weights = NULL,  
+  include_top = TRUE,  
+  classes = 10,  
+  input_shape = c(64, 64, 3)  
+)
+model6VGG %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy', 'AUC')
+)
+```
+
+Te modele mają 14,714,688 parametrów.
+
+#### Trenowanie Model5VGG
+
+```{r,eval=FALSE}
+history7 <- model5VGG %>% fit(
+  train_generator2,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+  callbacks = callbacks_list
+)
+plot(history7)
+```
+
+![Historia trenowania Model5VGG](model5VGG.png)
+
+```{r,eval=FALSE}
+model5VGG %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
+model5VGG %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model5VGG, filepath="models/model5VGG")
+```
+
+```{r}
+#| echo: false
+result_train_model5VGG <- c(0.447080165147781,0.841666638851166, 0.987841248512268)
+result_val_model5VGG <- c(0.439460247755051, 0.860119044780731, 0.986386120319366)
+r_model5VGG <- data.frame(result_train_model5VGG,result_val_model5VGG)
+rownames(r_model5VGG) <-  c("loss", "accuracy", "auc")
+kable(r_model5VGG)
+```
+
+Model5VGG został wytrenowany na obrazach z argumentacją. Model przestał się poprawiać według callbacka po około 45 epokach. Strata jest na zbiorze treningowy jest bardzo zbliżona do straty na zbiorze walidacyjnym. Dokładność na zbiorze testowym wyniosła `r round(result_train_model5VGG[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model5VGG[2],4)*100`%, co sugeruje, że model w miarę dobrze klasyfikuje dane na których był trenowany, lepiej generalizuje. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model dobrze rozróżnia klasy.
+
+#### Trenowanie Model6VGG
+
+```{r,eval=FALSE}
+history8 <- model6VGG %>% fit(
+  train_generator2,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+  callbacks = callbacks_list
+)
+plot(history8)
+```
+
+![Historia trenowania Model6VGG](model6VGG.png)
+
+```{r, eval=FALSE}
+model6VGG %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
+model6VGG %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model6VGG, filepath="models/model6VGG")
+```
+
+```{r}
+#| echo: false
+result_train_model6VGG <- c(2.29478740692139,0.111111111938953, 0.534979462623596)
+result_val_model6VGG<- c(2.29488229751587, 0.111607141792774, 0.534825563430786)
+r_model6VGG <- data.frame(result_train_model6VGG,result_val_model6VGG)
+rownames(r_model6VGG) <-  c("loss", "accuracy", "auc")
+kable(r_model6VGG)
+```
+
+Model6VGG został wytrenowany na obrazach z argumentacją. Model przestał się poprawiać według callbacka po około 45 epokach. Strata jest na obu zbiorach jest wysoka, co sugeruje, że model ma trudność dopasowywania się do danych. Dokładność na zbiorze testowym wyniosła `r round(result_train_model6VGG[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model6VGG[2],4)*100`%, co sugeruje, że model ma bardzo niską dokładność, jest zbliżona do zgadywania. Wartości AUC są bliskie 0.5 w obu przypadkach, co oznacza że model nie ma zdolności do rozróżniania klas.
+
+#### Wnioski
+
+Model5VGG jest lepszy we wszystkich metrykach.
+
+### DenseNet121
+
+DenseNet121 to popularna architektura głębokich sieci neuronowych do zadań związanych z rozpoznawanie obrazu. Zakłada ona że każda warstwa otrzymuje nie tylko wyjście poprzedniej warstwy, ale także wszystkich poprzednich. Tworzę dwa modele:
+
+-   Model7DN121: Wagi są wyuczone na ImageNet oraz bez górnych warstw,
+
+-   Model8DN121: Wagi są losowo przypisywane oraz z górnymi warstwami.
+
+```{r, eval=FALSE}
+#| code-fold: show
+conv_baseDN121 <- application_densenet121(
+  weights = "imagenet",
+  include_top = FALSE,
+  input_shape = c(64, 64, 3)
+)
+freeze_weights(conv_baseDN121)
+
+model7DN121 <- keras_model_sequential() %>%
+  conv_baseDN121 %>%
+  layer_flatten() %>%
+  layer_dense(units = 256, activation = "relu") %>%
+  layer_dropout(rate = 0.5) %>%
+  layer_dense(units = 10, activation = "softmax")
+
+model7DN121 %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy', 'AUC')
+)
+```
+
+```{r, eval=FALSE}
+model8DN121_2 <- application_densenet121(
+  weights = NULL,
+  include_top = TRUE,
+  classes = 10,
+  input_shape = c(64, 64, 3)
+)
+model8DN121_2 %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy', 'AUC')
+)
+```
+
+Te modele mają 7,037,504 parametrów.
+
+#### Trenowanie Model7DN121
+
+```{r, eval=FALSE}
+history9 <- model7DN121 %>% fit(
+  train_generator2,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+  callbacks = callbacks_list
+)
+plot(history9)
+```
+
+![Historia trenowania Model7DN121](model7DN121.png)
+
+```{r, eval=FALSE}
+model7DN121 %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
+model7DN121 %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model7DN121, filepath="models/model7DN121")
+```
+
+```{r}
+#| echo: false
+result_train_model7DN121 <- c(0.355238407850266,0.875972211360931, 0.991324424743652)
+result_val_model7DN121<- c(0.356567680835724, 0.879464268684387, 0.990480244159698)
+r_model7DN121 <- data.frame(result_train_model7DN121,result_val_model7DN121)
+rownames(r_model7DN121) <-  c("loss", "accuracy", "auc")
+kable(r_model7DN121)
+```
+
+Model7DN121 został wytrenowany na obrazach z argumentacją. Model przestał się poprawiać według callbacka po około 58 epokach. Strata jest na obu zbiorach jest stosunkowo niska, co sugeruje, że model ma nie trudność dopasowywania się do danych. Dokładność na zbiorze testowym wyniosła `r round(result_train_model7DN121[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model7DN121[2],4)*100`%, co sugeruje, że model radzi sobie stosunkowo dobrze z przewidywaniem klas. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model ma zdolności do różnicowania klas.
+
+#### Trenowanie Model8DN121
+
+```{r, eval=FALSE}
+history10 <- model8DN121_2 %>% fit(
+  train_generator2,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+  callbacks = callbacks_list
+)
+plot(history10)
+```
+
+![Historia trenowania Model8DN121_2](model8DN121_2.png)
+
+```{r, eval=FALSE}
+model8DN121_2 %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
+model8DN121_2 %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model8DN121_2, filepath="models/model8DN121_2")
+```
+
+```{r}
+#| echo: false
+result_train_model8DN121_2 <- c(0.0843644887208939,0.971666693687439, 0.99928343296051)
+result_val_model8DN121_2<- c(0.149079859256744, 0.95126485824585, 0.99718177318573)
+r_model8DN121_2 <- data.frame(result_train_model8DN121_2,result_val_model8DN121_2)
+rownames(r_model8DN121_2) <-  c("loss", "accuracy", "auc")
+kable(r_model8DN121_2)
+```
+
+Model8DN121_2 został wytrenowany na obrazach z argumentacją. Model przestał się poprawiać według callbacka po około 38 epokach. Strata jest na obu zbiorach jest niska, co sugeruje, że model ma nie trudność dopasowywania się do danych. Dokładność na zbiorze testowym wyniosła `r round(result_train_model8DN121_2[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model8DN121_2[2],4)*100`%, co sugeruje, że model radzi sobie bardzo dobrze z przewidywaniem klas. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model ma zdolności do różnicowania klas.
+
+#### Wnioski
+
+Model8DN121_2 jest wyraźnie lepszy i bardziej efektywny niż Model7DN121, mimo że może występować nieznaczne przeuczenie.
+
+### EfficientNetB2
+
+EfficientNet to rodzina modeli konwolucyjnych sieci neuronowych opracowana przez Google, wykorzystuje technikę skalowania współczynników, aby efektywnie skalować głębokość, szerokość i rozdzielczość sieci, co wpływa na lepsze wykorzystanie zasobów obliczeniewych i lepsze klasyfikacji.
+
+Tworzę 3 modele:
+
+-   Model9EFB2: Wagi są losowo przypisywane oraz z górnymi warstwami, dalej jest trenowany na argumentowanym zbiorze obrazów,
+
+-   Model10EFB2: Wagi są losowo przypisywane oraz z górnymi warstwami, dalej jest trenowany na nieargumentowanym zbiorze obrazów,
+
+-   Model12EFB2: Wagi są losowo przypisywane oraz z górnymi warstwami, dalej jest trenowany na nieargumentowanym zbiorze obrazów możliwie do 100 epok, bez callbacku.
+
+```{r,eval=FALSE}
+#| code-fold: show
+model9EFB2 <- application_efficientnet_b2( 
+  weights = NULL,
+  include_top = TRUE,
+  classes = 10,
+  input_shape = c(64, 64, 3)
+)
+model9EFB2 %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy', 'AUC')
+)
+```
+
+```{r,eval=FALSE}
+model10EFB2 <- application_efficientnet_b2( 
+  weights = NULL,
+  include_top = TRUE,
+  classes = 10,
+  input_shape = c(64, 64, 3)
+)
+model10EFB2 %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy', 'AUC')
+)
+model12EFB2 <- application_efficientnet_b2( 
+  weights = NULL,
+  include_top = TRUE,
+  classes = 10,
+  input_shape = c(64, 64, 3)
+)
+model12EFB2 %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy', 'AUC')
+)
+```
+
+Te modele mają 10.2M parametrów.
+
+#### Trenowanie Model9EFB2
+
+```{r,eval=FALSE}
+history10 <- model9EFB2 %>% fit(
+  train_generator2,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+  callbacks = callbacks_list
+)
+plot(history10)
+```
+
+![](model9EFB2.png)
+
+```{r,eval=FALSE}
+model9EFB2 %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
+model9EFB2 %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model9EFB2, filepath="models/model9EFB2")
+```
+
+```{r}
+#| echo: false
+result_train_model9EFB2 <- c(0.126530572772026,0.956527769565582, 0.998575747013092)
+result_val_model9EFB2<- c(0.151147767901421, 0.944568455219269, 0.998105943202972)
+r_model9EFB2 <- data.frame(result_train_model9EFB2,result_val_model9EFB2)
+rownames(r_model9EFB2) <-  c("loss", "accuracy", "auc")
+kable(r_model9EFB2)
+```
+
+Model9EFB2 przestał się poprawiać według callbacka po około 53 epokach. Strata jest na obu zbiorach jest stosunkowo niska, co sugeruje, że model ma nie trudność dopasowywania się do danych. Dokładność na zbiorze testowym wyniosła `r round(result_train_model9EFB2[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model9EFB2[2],4)*100`%, co sugeruje, że model radzi sobie bardzo dobrze z przewidywaniem klas. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model ma zdolności do różnicowania klas.
+
+#### Trenowanie Model10EFB2
+
+```{r,eval=FALSE}
+history11 <- model10EFB2 %>% fit(
+  train_generator1,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32),
+  callbacks = callbacks_list
+)
+plot(history11)
+```
+
+![Historia trenowania Model10EFB2](model10EFB2.png)
+
+```{r,eval=FALSE}
+model10EFB2 %>% evaluate(train_generator1, steps = as.integer(nrow(train) / 32))
+model10EFB2 %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model10EFB2, filepath="models/model10EFB2")
+```
+
+```{r}
+#| echo: false
+result_train_model10EFB2 <- c(0.104039587080479,0.986990749835968, 0.995075523853302)
+result_val_model10EFB2<- c(0.587675511837006, 0.864955365657806, 0.975360155105591)
+r_model10EFB2 <- data.frame(result_train_model10EFB2,result_val_model10EFB2)
+rownames(r_model10EFB2) <-  c("loss", "accuracy", "auc")
+kable(r_model10EFB2)
+```
+
+Model10EFB2 przestał się poprawiać według callbacka po około 39 epokach. Strata jest bardzo niska na zbiorze treningowym, ale wyższa na zbiorze walidacyjnym co może oznaczać przeuczenie. Dokładność na zbiorze testowym wyniosła `r round(result_train_model10EFB2[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model10EFB2[2],4)*100`%, co sugeruje, że model radzi sobie bardzo dobrze z przewidywaniem klas na zbiorze testowym, ale ma gorszą generalizację. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model ma zdolności do różnicowania klas.
+
+#### Trenowanie Model12EFB2
+
+```{r,eval=FALSE}
+history13 <- model12EFB2 %>% fit(
+  train_generator2,
+  steps_per_epoch = as.integer(nrow(train) / 32),
+  epochs = 100,
+  validation_data = val_generator1,
+  validation_steps = as.integer(nrow(val) / 32)
+)
+plot(history13)
+```
+
+![Historia trenowania Model12EFB2](model12EFB2.png)
+
+```{r,eval=FALSE}
+model12EFB2 %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
+model12EFB2 %>% evaluate(val_generator1, steps = as.integer(nrow(val) / 32))
+save_model_hdf5(model12EFB2, filepath="models/model12EFB2.h5")
+```
+
+```{r}
+#| echo: false
+result_train_model12EFB2 <- c(0.124551989138126,0.95935183763504, 0.998572111129761)
+result_val_model12EFB2<- c(0.171981126070023, 0.944568455219269, 0.996588051319122)
+r_model12EFB2 <- data.frame(result_train_model12EFB2,result_val_model12EFB2)
+rownames(r_model12EFB2) <-  c("loss", "accuracy", "auc")
+kable(r_model12EFB2)
+```
+
+Strata w Model12EFB2 jest na obu zbiorach jest niska, co sugeruje, że model ma nie trudność dopasowywania się do danych. Dokładność na zbiorze testowym wyniosła `r round(result_train_model12EFB2[2],4)*100`%, natomiast na zbiorze walidacyjnym `r round(result_val_model12EFB2[2],4)*100`%, co sugeruje, że model radzi sobie bardzo dobrze z przewidywaniem klas i generalizacją. Wartości AUC są bliskie 1 w obu przypadkach, co oznacza że model ma zdolności do różnicowania klas.
+
+#### Wnioski
+
+Model12EFB2 i Model9EFB2 mają najlepsze metryki, są prawie identyczne(to te same modele, tylko model12EFB2 był trenowany dłużej). Model10EFB2 jest lepszy w klasyfikacji treningowego, jednak dużo słabszy na walidacyjnym.
+
+## Ewaluacja modeli
+
+Do ewaluacji wybrałem Model3, Model8DN121_2, Model9EFB2, Model10EFB2, Model12EFB2. Oraz zrezygnowałem z metryki AUC, na rzecz metryk top3 oraz top5, czyli procent przypadków, w których prawidłowa klasa znajduje się wśród odpowiednio 3 i 5 najbardziej prawdopodobnych predykcji.
+
+```{r,eval=FALSE}
+top3 <- metric_top_k_categorical_accuracy(k=3, name="top3")
+top5 <- metric_top_k_categorical_accuracy(k=5, name="top5")
+model3<- load_model_hdf5("/kaggle/input/klastfikacja_palu/tensorflow2/v1/1/model3.h5", compile=FALSE)
+model8DN121_2<- load_model_hdf5("/kaggle/input/klastfikacja_palu/tensorflow2/v1/1/model8DN121_2.h5", compile=FALSE)
+model9EFB2<- load_model_hdf5("/kaggle/input/klastfikacja_palu/tensorflow2/v1/1/model9EFB2.h5", compile=FALSE)
+model10EFB2<- load_model_hdf5("/kaggle/input/klastfikacja_palu/tensorflow2/v1/1/model10EFB2.h5", compile=FALSE)
+model12EFB2<- load_model_hdf5("/kaggle/input/klastfikacja_palu/tensorflow2/v1/1/model12EFB2.h5", compile=FALSE)
+model3%>%compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_nadam(),
+  metrics = list("acc", top3, top5)
+)
+model8DN121_2%>%compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_nadam(),
+  metrics = list("acc", top3, top5)
+)
+model9EFB2%>%compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_nadam(),
+  metrics = list("acc", top3, top5)
+)
+model10EFB2%>%compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_nadam(),
+  metrics = list("acc", top3, top5)
+)
+model12EFB2%>%compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_nadam(),
+  metrics = list("acc", top3, top5)
+)
+results_model3<-model3 %>% evaluate(test_generator1)
+results_model8DN121_2<-model8DN121_2 %>% evaluate(test_generator1)
+results_model9EFB2<-model9EFB2 %>% evaluate(test_generator1)
+results_model10EFB2<-model10EFB2 %>% evaluate(test_generator1)
+results_model12EFB2<-model12EFB2 %>% evaluate(test_generator1)
+```
+
+```{r}
+#| echo: false
+results_model3 <- c(0.382792204618454,0.874074101448059, 0.983333349227905,0.997259259223938)
+results_model8DN121_2<- c(0.139881297945976, 0.951481461524963, 0.920962989330292,0.953518509864807)
+results_model9EFB2 <- c(0.52599161863327,0.811111092567444, 0.925420880317688,0.957272708415985)
+                    
+results_model10EFB2<- c(0.587594151496887, 0.804074048995972, 0.928425908088684,0.960370361804962)
+
+results_model12EFB2<- c(0.180020496249199, 0.935555577278137, 0.937619030475616,0.965925931930542)
+
+result <- data.frame("model3" = results_model3,
+                     "model8DN121_2" = results_model8DN121_2,
+                     "model9EFB2" = results_model9EFB2,
+                     "model10EFB2" = results_model10EFB2,
+                     "model12EFB2" = results_model12EFB2)
+rownames(result) <-  c("loss", "accuracy", "accuracy-top3", "accuracy-top5" )
+kable(t(result))
+
+```
+
+### Wnioski
+
+-   Najlepszy ogólny model: Model8DN121_2, ze względu na najniższą stratę i najwyższą dokładność, co wskazuje na jego skuteczność i precyzję w klasyfikacji.
+
+-   Model3 również jest bardzo dobrym wyborem, szczególnie ze względu na bardzo wysoką dokładność w Top-3 i Top-5, co może być korzystne w scenariuszach, gdzie kluczowa jest rozważana większa liczba najwyższych predykcji.
+
+-   Model12EFB2 także jest godny uwagi, wykazuje niską stratę i wysoką dokładność, co czyni go dobrym wyborem, jeśli zależy nam na balansie między dopasowaniem a precyzją.
+
+-   Model9EFB2 i Model10EFB2 wykazują wyższe straty i niższą dokładność, więc mogą być mniej skuteczne w porównaniu do pozostałych modeli.
+
+-   Model9EFB2 i Model12EFB2 różnią się tylko ilością epok trenowania, co sugeruje, że callback nie pomógł odnaleść optymalnej liczby epok.
