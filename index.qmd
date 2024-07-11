@@ -1,5 +1,5 @@
 ---
-title: "LULC_Classification"
+title: "LULC Classification"
 author: "Paweł Niedziela"
 format: 
   html:

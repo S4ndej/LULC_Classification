@@ -4,12 +4,8 @@ project:
   
 
 website:
-  title: "LULC_Classification"
-  navbar:
-    left:
-      - href: index.qmd
-        text: Home
-      - about.qmd
+  title: "LULC Classification"
+  
 
 format:
   html:
