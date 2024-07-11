@@ -1,0 +1,24 @@
+---
+title: "LULC_Classification"
+author: "Paweł Niedziela"
+format: 
+  html:
+    self-contained: true
+    embed-resources: true
+    toc: true
+    toc-title: "Spis treści"
+    code-fold: true
+execute: 
+  warning: false
+  cache: true
+  
+editor: visual
+---
+
+This is a Quarto website.
+
+To learn more about Quarto websites visit <https://quarto.org/docs/websites>.
+
+```{r}
+1 + 1
+```
