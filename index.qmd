@@ -435,7 +435,7 @@ history1Basic <- model1Basic %>% fit(
 plot(history1Basic)
 ```
 
-![Historia trenowania Model1Basic](model1Basic.png){fig-align="center"}
+![Historia trenowania Model1Basic](models\model1Basic.png){fig-align="center"}
 
 ```{r, eval=FALSE}
 model1Basic %>% evaluate(train_generator1, steps =  as.integer(nrow(train) / 32))
@@ -469,7 +469,7 @@ history1Argumented <- model1Argumented %>% fit(
 plot(history1Argumented)
 ```
 
-![Historia trenowania Model1Argumented](model1Argumented.png)
+![Historia trenowania Model1Argumented](models\model1Argumented.png)
 
 ```{r, eval=FALSE}
 model1Argumented %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
@@ -553,7 +553,7 @@ history2Basic <- model2Basic %>% fit(
 plot(history2Basic)
 ```
 
-![Historia trenowania Model2Basic](model2Basic.png)
+![Historia trenowania Model2Basic](models\model2Basic.png)
 
 ```{r, eval=FALSE}
 model2Basic %>% evaluate(train_generator1, steps =as.integer(nrow(train) / 32))
@@ -588,7 +588,7 @@ history2Argumented <- model2Argumented %>% fit(
 plot(history2Argumented)
 ```
 
-![Historia trenowania Model2Argumented](model2Argumented.png)
+![Historia trenowania Model2Argumented](models\model2Argumented.png)
 
 ```{r, eval=FALSE}
 model2Argumented %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
@@ -723,7 +723,7 @@ callbacks = callbacks_list
 plot(history5)
 ```
 
-![Historia trenowania Model3](model3.png)
+![Historia trenowania Model3](models\model3.png)
 
 ```{r,eval=FALSE}
 model3 %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
@@ -757,7 +757,7 @@ history6 <- model4 %>% fit(
 plot(history6)
 ```
 
-![Historia trenowania Model4](model4.png)
+![Historia trenowania Model4](models\model4.png)
 
 ```{r}
 #| echo: false
@@ -843,7 +843,7 @@ history7 <- model5VGG %>% fit(
 plot(history7)
 ```
 
-![Historia trenowania Model5VGG](model5VGG.png)
+![Historia trenowania Model5VGG](models\model5VGG.png)
 
 ```{r,eval=FALSE}
 model5VGG %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
@@ -876,7 +876,7 @@ history8 <- model6VGG %>% fit(
 plot(history8)
 ```
 
-![Historia trenowania Model6VGG](model6VGG.png)
+![Historia trenowania Model6VGG](models\model6VGG.png)
 
 ```{r, eval=FALSE}
 model6VGG %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
@@ -960,7 +960,7 @@ history9 <- model7DN121 %>% fit(
 plot(history9)
 ```
 
-![Historia trenowania Model7DN121](model7DN121.png)
+![Historia trenowania Model7DN121](models\model7DN121.png)
 
 ```{r, eval=FALSE}
 model7DN121 %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
@@ -993,7 +993,7 @@ history10 <- model8DN121_2 %>% fit(
 plot(history10)
 ```
 
-![Historia trenowania Model8DN121_2](model8DN121_2.png)
+![Historia trenowania Model8DN121_2](models\model8DN121_2.png)
 
 ```{r, eval=FALSE}
 model8DN121_2 %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
@@ -1084,7 +1084,7 @@ history10 <- model9EFB2 %>% fit(
 plot(history10)
 ```
 
-![](model9EFB2.png)
+![Historia trenowania Model8DN121_2](models\model9EFB2.png)
 
 ```{r,eval=FALSE}
 model9EFB2 %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
@@ -1117,7 +1117,7 @@ history11 <- model10EFB2 %>% fit(
 plot(history11)
 ```
 
-![Historia trenowania Model10EFB2](model10EFB2.png)
+![Historia trenowania Model10EFB2](models\model10EFB2.png)
 
 ```{r,eval=FALSE}
 model10EFB2 %>% evaluate(train_generator1, steps = as.integer(nrow(train) / 32))
@@ -1149,7 +1149,7 @@ history13 <- model12EFB2 %>% fit(
 plot(history13)
 ```
 
-![Historia trenowania Model12EFB2](model12EFB2.png)
+![Historia trenowania Model12EFB2](models\model12EFB2.png)
 
 ```{r,eval=FALSE}
 model12EFB2 %>% evaluate(train_generator2, steps = as.integer(nrow(train) / 32))
